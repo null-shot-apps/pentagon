@@ -1,0 +1,45 @@
+{
+  "name": "d8d6dce9-2c34-4e79-abd4-c7636a507f1b",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack -p 8001",
+    "build": "next build",
+    "build:cf": "opennextjs-cloudflare build",
+    "start": "next start",
+    "lint": "next lint",
+    "deploy": "opennextjs-cloudflare build && wrangler deploy",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts"
+  },
+  "dependencies": {
+    "@coinbase/wallet-sdk": "^4.3.7",
+    "@opennextjs/cloudflare": "^1.7.1",
+    "@openzeppelin/contracts": "^5.4.0",
+    "@rainbow-me/rainbowkit": "^2.2.9",
+    "@tanstack/react-query": "^5.90.11",
+    "axios": "^1.13.2",
+    "ethers": "^5.8.0",
+    "lucide-react": "^0.555.0",
+    "next": "15.4.6",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "viem": "^2.21.0",
+    "wagmi": "^2.19.5"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20.19.12",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.4.6",
+    "hardhat": "^2.27.1",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "wrangler": "^4.33.2"
+  }
+}
+
