@@ -3,7 +3,10 @@
 import { useState, useEffect } from 'react';
 import { useAccount } from 'wagmi';
 import { MatchCard } from './MatchCard';
-import { Clock, TrendingUp } from 'lucide-react';
+import { Clock, TrendingUp, AlertCircle } from 'lucide-react';
+import { footballAPI, FootballMatch } from '../lib/football-api';
+import { aiAgent } from '../lib/ai-agent';
+import { contractIntegration, ContractMatch } from '../lib/contract-integration';
 
 interface Match {
   id: number;
@@ -15,34 +18,137 @@ interface Match {
   drawOdds: number;
   awayOdds: number;
   totalPool: bigint;
+  apiMatchId?: number;
+  confidence?: number;
+  analysis?: string;
 }
 
 export function MatchList() {
   const { isConnected } = useAccount();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // For demo purposes, we'll show the sample match created during deployment
   useEffect(() => {
     const loadMatches = async () => {
       try {
-        // In a real app, you'd fetch this from the contract or API
-        // For now, we'll show the sample match
-        const sampleMatch: Match = {
-          id: 1,
-          homeTeam: "Manchester United",
-          awayTeam: "Liverpool",
-          startTime: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
-          status: 0, // UPCOMING
-          homeOdds: 2500, // 2.5x
-          drawOdds: 3200, // 3.2x
-          awayOdds: 2800, // 2.8x
-          totalPool: BigInt(0)
-        };
+        setLoading(true);
+        setError(null);
+
+        // 1. Fetch real Premier League matches from Football API
+        const footballMatches = await footballAPI.getPremierLeagueMatches();
         
-        setMatches([sampleMatch]);
+        // 2. Get existing matches from smart contract
+        const contractMatches = await contractIntegration.getAllMatches();
+        
+        // 3. Process and merge data
+        const processedMatches: Match[] = [];
+        
+        // First, add matches that exist in both API and contract
+        for (const contractMatch of contractMatches) {
+          const apiMatch = footballMatches.find(fm => 
+            fm.homeTeam.name === contractMatch.homeTeam && 
+            fm.awayTeam.name === contractMatch.awayTeam
+          );
+          
+          processedMatches.push({
+            id: contractMatch.id,
+            homeTeam: contractMatch.homeTeam,
+            awayTeam: contractMatch.awayTeam,
+            startTime: contractMatch.startTime,
+            status: contractMatch.status,
+            homeOdds: contractMatch.homeOdds,
+            drawOdds: contractMatch.drawOdds,
+            awayOdds: contractMatch.awayOdds,
+            totalPool: contractMatch.totalPool,
+            apiMatchId: apiMatch?.id,
+          });
+        }
+        
+        // Then, create new matches for upcoming API matches not in contract
+        const upcomingApiMatches = footballMatches
+          .filter(fm => fm.status === 'SCHEDULED')
+          .slice(0, 5); // Limit to next 5 matches
+        
+        for (const apiMatch of upcomingApiMatches) {
+          // Check if this match already exists in contract
+          const existsInContract = contractMatches.some(cm => 
+            cm.homeTeam === apiMatch.homeTeam.name && 
+            cm.awayTeam === apiMatch.awayTeam.name
+          );
+          
+          if (!existsInContract) {
+            try {
+              // Get team statistics
+              const homeStats = await aiAgent.getTeamStats(apiMatch.homeTeam.name);
+              const awayStats = await aiAgent.getTeamStats(apiMatch.awayTeam.name);
+              
+              // Calculate AI-powered odds
+              const prediction = await aiAgent.calculateOdds(apiMatch, homeStats, awayStats);
+              
+              // Convert odds to contract format (multiply by 1000 for precision)
+              const homeOdds = Math.round(prediction.homeOdds * 1000);
+              const drawOdds = Math.round(prediction.drawOdds * 1000);
+              const awayOdds = Math.round(prediction.awayOdds * 1000);
+              
+              // Create match in smart contract
+              const startTime = Math.floor(new Date(apiMatch.utcDate).getTime() / 1000);
+              
+              await contractIntegration.createMatch(
+                apiMatch.homeTeam.name,
+                apiMatch.awayTeam.name,
+                startTime,
+                homeOdds,
+                drawOdds,
+                awayOdds
+              );
+              
+              // Add to processed matches
+              processedMatches.push({
+                id: contractMatches.length + processedMatches.length + 1,
+                homeTeam: apiMatch.homeTeam.name,
+                awayTeam: apiMatch.awayTeam.name,
+                startTime,
+                status: 0, // UPCOMING
+                homeOdds,
+                drawOdds,
+                awayOdds,
+                totalPool: BigInt(0),
+                apiMatchId: apiMatch.id,
+                confidence: prediction.confidence,
+                analysis: prediction.analysis,
+              });
+            } catch (error) {
+              console.error(`Error processing match ${apiMatch.homeTeam.name} vs ${apiMatch.awayTeam.name}:`, error);
+            }
+          }
+        }
+        
+        // Sort matches by start time
+        processedMatches.sort((a, b) => a.startTime - b.startTime);
+        
+        setMatches(processedMatches);
       } catch (error) {
         console.error('Error loading matches:', error);
+        setError(error instanceof Error ? error.message : 'Failed to load matches');
+        
+        // Fallback: show contract matches only
+        try {
+          const contractMatches = await contractIntegration.getAllMatches();
+          setMatches(contractMatches.map(cm => ({
+            id: cm.id,
+            homeTeam: cm.homeTeam,
+            awayTeam: cm.awayTeam,
+            startTime: cm.startTime,
+            status: cm.status,
+            homeOdds: cm.homeOdds,
+            drawOdds: cm.drawOdds,
+            awayOdds: cm.awayOdds,
+            totalPool: cm.totalPool,
+          })));
+        } catch (contractError) {
+          console.error('Error loading contract matches:', contractError);
+        }
       } finally {
         setLoading(false);
       }
@@ -72,7 +178,7 @@ export function MatchList() {
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center space-x-2">
             <Clock className="h-6 w-6 text-blue-600" />
-            <span>Upcoming Matches</span>
+            <span>Premier League Matches</span>
           </h2>
           <div className="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400">
             <TrendingUp className="h-4 w-4" />
@@ -80,7 +186,23 @@ export function MatchList() {
           </div>
         </div>
 
-        {matches.length === 0 ? (
+        {error && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-6">
+            <div className="flex items-center space-x-3">
+              <AlertCircle className="h-5 w-5 text-red-400" />
+              <div>
+                <h3 className="text-sm font-medium text-red-800 dark:text-red-200">
+                  Error loading matches
+                </h3>
+                <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                  {error}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {matches.length === 0 && !loading ? (
           <div className="text-center py-12">
             <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
@@ -121,4 +243,6 @@ export function MatchList() {
     </div>
   );
 }
+
+
 

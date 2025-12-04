@@ -1,11 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
+import { useState, useEffect } from 'react';
+import { useAccount } from 'wagmi';
 import { parseEther, formatEther } from 'viem';
-import { CONTRACTS } from '../lib/wagmi';
-import { PREDICTION_MARKET_ABI, POL_TOKEN_ABI } from '../lib/abis';
-import { X, Calculator, AlertCircle } from 'lucide-react';
+import { contractIntegration } from '../lib/contract-integration';
+import { X, Calculator, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface BetModalProps {
   match: {
@@ -22,33 +21,34 @@ interface BetModalProps {
 export function BetModal({ match, outcome, outcomeName, odds, onClose }: BetModalProps) {
   const { address } = useAccount();
   const [betAmount, setBetAmount] = useState('');
-  const [, setStep] = useState<'input' | 'approve' | 'bet' | 'success'>('input');
+  const [step, setStep] = useState<'input' | 'approve' | 'bet' | 'success'>('input');
+  const [balance, setBalance] = useState<bigint>(BigInt(0));
+  const [allowance, setAllowance] = useState<bigint>(BigInt(0));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
-  const { data: balance } = useReadContract({
-    address: CONTRACTS.POL_TOKEN,
-    abi: POL_TOKEN_ABI,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-  });
+  // Load user balance and allowance
+  useEffect(() => {
+    const loadUserData = async () => {
+      if (!address) return;
+      
+      try {
+        const [userBalance, userAllowance] = await Promise.all([
+          contractIntegration.getUserBalance(address),
+          contractIntegration.getAllowance(address),
+        ]);
+        
+        setBalance(userBalance);
+        setAllowance(userAllowance);
+      } catch (error) {
+        console.error('Error loading user data:', error);
+        setError('Failed to load wallet data');
+      }
+    };
 
-  const { data: allowance } = useReadContract({
-    address: CONTRACTS.POL_TOKEN,
-    abi: POL_TOKEN_ABI,
-    functionName: 'allowance',
-    args: address ? [address, CONTRACTS.PREDICTION_MARKET] : undefined,
-  }) as { data: bigint | undefined };
-
-  const { writeContract: approve, data: approveHash } = useWriteContract();
-  const { writeContract: placeBet, data: betHash } = useWriteContract();
-  const { writeContract: faucet } = useWriteContract();
-
-  const { isLoading: isApproving } = useWaitForTransactionReceipt({
-    hash: approveHash,
-  });
-
-  const { isLoading: isBetting } = useWaitForTransactionReceipt({
-    hash: betHash,
-  });
+    loadUserData();
+  }, [address]);
 
   const formatOdds = (odds: number) => {
     return (odds / 1000).toFixed(2);
@@ -79,47 +79,80 @@ export function BetModal({ match, outcome, outcomeName, odds, onClose }: BetModa
   };
 
   const handleApprove = async () => {
-    if (!betAmount) return;
+    if (!betAmount || !address) return;
+    
     try {
-      const amount = parseEther(betAmount);
-      approve({
-        address: CONTRACTS.POL_TOKEN,
-        abi: POL_TOKEN_ABI,
-        functionName: 'approve',
-        args: [CONTRACTS.PREDICTION_MARKET, amount],
-      });
+      setLoading(true);
+      setError(null);
       setStep('approve');
+      
+      const amount = parseEther(betAmount);
+      const hash = await contractIntegration.approvePOL(amount);
+      
+      setTxHash(hash);
+      
+      // Refresh allowance
+      const newAllowance = await contractIntegration.getAllowance(address);
+      setAllowance(newAllowance);
+      
+      setStep('input');
     } catch (error) {
       console.error('Approval failed:', error);
+      setError(error instanceof Error ? error.message : 'Approval failed');
+      setStep('input');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handlePlaceBet = async () => {
-    if (!betAmount) return;
+    if (!betAmount || !address) return;
+    
     try {
-      const amount = parseEther(betAmount);
-      placeBet({
-        address: CONTRACTS.PREDICTION_MARKET,
-        abi: PREDICTION_MARKET_ABI,
-        functionName: 'placeBet',
-        args: [BigInt(match.id), outcome, amount],
-      });
+      setLoading(true);
+      setError(null);
       setStep('bet');
+      
+      const amount = parseEther(betAmount);
+      const hash = await contractIntegration.placeBet(match.id, outcome, amount);
+      
+      setTxHash(hash);
+      setStep('success');
+      
+      // Refresh user data
+      const [newBalance, newAllowance] = await Promise.all([
+        contractIntegration.getUserBalance(address),
+        contractIntegration.getAllowance(address),
+      ]);
+      
+      setBalance(newBalance);
+      setAllowance(newAllowance);
+      
     } catch (error) {
       console.error('Bet placement failed:', error);
+      setError(error instanceof Error ? error.message : 'Bet placement failed');
+      setStep('input');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleFaucet = async () => {
+    if (!address) return;
+    
     try {
-      faucet({
-        address: CONTRACTS.POL_TOKEN,
-        abi: POL_TOKEN_ABI,
-        functionName: 'faucet',
-        args: [parseEther('100')], // 100 POL
-      });
+      setLoading(true);
+      setError(null);
+      
+      // For demo purposes - in production, this would be a separate faucet contract
+      // For now, we'll show a message that this is a demo feature
+      setError('Faucet feature is for demo only. In production, you would purchase POL tokens.');
+      
     } catch (error) {
       console.error('Faucet failed:', error);
+      setError(error instanceof Error ? error.message : 'Faucet failed');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -127,7 +160,7 @@ export function BetModal({ match, outcome, outcomeName, odds, onClose }: BetModa
     if (!betAmount || !balance) return false;
     try {
       const amount = parseEther(betAmount);
-      return BigInt(balance.toString()) < BigInt(amount.toString());
+      return balance < amount;
     } catch {
       return false;
     }
@@ -220,36 +253,70 @@ export function BetModal({ match, outcome, outcomeName, odds, onClose }: BetModa
           </div>
         </div>
 
+        {error && (
+          <div className="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="h-4 w-4 text-red-600" />
+              <span className="text-sm text-red-800 dark:text-red-200">
+                {error}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {step === 'success' && (
+          <div className="mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+            <div className="flex items-center space-x-2">
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <span className="text-sm text-green-800 dark:text-green-200">
+                Bet placed successfully!
+              </span>
+            </div>
+            {txHash && (
+              <div className="mt-2 text-xs text-green-700 dark:text-green-300">
+                Transaction: {txHash.slice(0, 10)}...{txHash.slice(-8)}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex space-x-3">
           <button
             onClick={onClose}
             className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           >
-            Cancel
+            {step === 'success' ? 'Close' : 'Cancel'}
           </button>
           
-          {needsApproval() ? (
-            <button
-              onClick={handleApprove}
-              disabled={!betAmount || hasInsufficientBalance() || isApproving}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isApproving ? 'Approving...' : 'Approve POL'}
-            </button>
-          ) : (
-            <button
-              onClick={handlePlaceBet}
-              disabled={!betAmount || hasInsufficientBalance() || isBetting}
-              className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isBetting ? 'Placing Bet...' : 'Place Bet'}
-            </button>
+          {step !== 'success' && (
+            needsApproval() ? (
+              <button
+                onClick={handleApprove}
+                disabled={!betAmount || hasInsufficientBalance() || loading}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading && step === 'approve' ? 'Approving...' : 'Approve POL'}
+              </button>
+            ) : (
+              <button
+                onClick={handlePlaceBet}
+                disabled={!betAmount || hasInsufficientBalance() || loading}
+                className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading && step === 'bet' ? 'Placing Bet...' : 'Place Bet'}
+              </button>
+            )
           )}
         </div>
       </div>
     </div>
   );
 }
+
+
+
+
+
 
 
 
